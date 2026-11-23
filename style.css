@@ -89,6 +89,17 @@ select {
 }
 
 .station { cursor: pointer; }
+.station .addr { display: flex; align-items: center; gap: 10px; }
+.station .brand { display: block; font-size: 0.78rem; font-weight: 600; color: var(--accent); }
+.logo {
+  flex: none; width: 32px; height: 32px; border-radius: 8px; background: #fff; border: 1px solid var(--border);
+  object-fit: contain; padding: 3px; display: inline-flex; align-items: center; justify-content: center;
+}
+.logo.initials, .plogo.initials { background: var(--accent); color: #fff; font-size: 0.72rem; font-weight: 700; border: 0; }
+.logo.empty { background: var(--border); font-size: 0.9rem; border: 0; }
+.plogo { width: 14px; height: 14px; border-radius: 3px; vertical-align: -3px; margin-right: 3px; background: #fff; object-fit: contain; display: inline-block; }
+.plogo.initials { font-size: 7px; line-height: 14px; text-align: center; }
+.plogo.empty { display: none; }
 .station .others { grid-column: 1 / -1; font-size: 0.8rem; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .station.without .addr { font-weight: 500; }
 .price .fb { font-size: 0.7rem; font-weight: 600; vertical-align: middle; padding: 1px 5px; border-radius: 5px; border: 1px solid currentColor; }

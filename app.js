@@ -25,17 +25,128 @@ function loadPrefs() {
     const p = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
     if (p.fuel && FUEL_LABELS[p.fuel]) els.fuel.value = p.fuel;
     if (p.radius) els.radius.value = String(p.radius);
-    if (p.sort) els.sort.value = p.sort;
+    // Le tri mémorisé n'est repris que s'il a été choisi explicitement (sinon : distance, le défaut).
+    if (p.sort && p.sortChosen) els.sort.value = p.sort;
   } catch { /* stockage indisponible : valeurs par défaut */ }
   if (!els.radius.value) els.radius.value = '10'; // valeur mémorisée invalide
+  if (!els.sort.value) els.sort.value = 'distance';
 }
-function savePrefs() {
+function savePrefs({ sortChosen = false } = {}) {
   try {
+    const prev = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
     localStorage.setItem(PREFS_KEY, JSON.stringify({
       fuel: els.fuel.value, radius: els.radius.value, sort: els.sort.value,
+      sortChosen: sortChosen || !!prev.sortChosen,
     }));
   } catch { /* ignore */ }
 }
+
+// ---------- enseignes et logos ----------
+// Le jeu de données officiel ne donne pas l'enseigne : elle vient de l'API communautaire prix-carburants.2aaz.fr
+// (mêmes identifiants de station, CORS ouvert, sans clé). Mise en cache locale 30 jours par station.
+const BRAND_API = 'https://api.prix-carburants.2aaz.fr';
+const BRANDS_KEY = 'prixcarburant.brands.v1';
+const BRAND_TTL = 30 * 86400000;
+// Enseigne (normalisée, sans accents) -> nom affiché + domaine dont l'icône sert de logo.
+const BRAND_LOGOS = [
+  [/total/, 'TotalEnergies', 'totalenergies.fr'],
+  [/leclerc/, 'E.Leclerc', 'e.leclerc'],
+  [/carrefour/, 'Carrefour', 'carrefour.fr'],
+  [/intermarche/, 'Intermarché', 'intermarche.com'],
+  [/(^|\s)(super|hyper|systeme)\s*u$|^u\s*express$|^u$/, 'Système U', 'magasins-u.com'],
+  [/auchan/, 'Auchan', 'auchan.fr'],
+  [/esso/, 'Esso', 'esso.fr'],
+  [/^bp\b/, 'BP', 'bp.com'],
+  [/shell/, 'Shell', 'shell.fr'],
+  [/avia/, 'Avia', 'avia-france.fr'],
+  [/casino|geant/, 'Casino', 'casino.fr'],
+  [/agip|^eni\b/, 'Eni', 'eni.com'],
+  [/dyneff/, 'Dyneff', 'dyneff.fr'],
+  [/netto/, 'Netto', 'netto.fr'],
+  [/cora/, 'Cora', 'cora.fr'],
+  [/leader\s*price/, 'Leader Price', 'leaderprice.fr'],
+  [/spar/, 'Spar', 'spar.fr'],
+  [/match/, 'Match', 'supermarchesmatch.fr'],
+  [/colruyt/, 'Colruyt', 'colruyt.fr'],
+  [/monoprix/, 'Monoprix', 'monoprix.fr'],
+  [/costco/, 'Costco', 'costco.fr'],
+];
+const norm = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+
+function brandInfo(raw) {
+  const n = norm(raw);
+  if (!n || /sans enseigne/.test(n)) return null;
+  const hit = BRAND_LOGOS.find(([re]) => re.test(n));
+  return hit ? { name: hit[1], logo: `https://www.google.com/s2/favicons?domain=${hit[2]}&sz=64` } : { name: raw, logo: null };
+}
+
+function readBrandCache() {
+  try { return JSON.parse(localStorage.getItem(BRANDS_KEY) || '{}'); } catch { return {}; }
+}
+function writeBrandCache(c) {
+  try { localStorage.setItem(BRANDS_KEY, JSON.stringify(c)); } catch { /* quota : tant pis */ }
+}
+
+async function brandApi(path, range) {
+  const res = await fetch(`${BRAND_API}${path}`, range ? { headers: { Range: range } } : undefined);
+  if (!res.ok) throw new Error(`Enseignes : HTTP ${res.status}`);
+  return res.json();
+}
+
+// Exécute les tâches avec au plus `n` requêtes simultanées (pour ménager l'API).
+async function pool(tasks, n) {
+  const out = [];
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, tasks.length) }, async () => {
+    while (i < tasks.length) { const k = i++; out[k] = await tasks[k]().catch(() => null); }
+  }));
+  return out;
+}
+
+// Renseigne s.brand pour chaque station ; renvoie true si de nouvelles enseignes ont été trouvées.
+async function loadBrands(list, pos, radiusKm) {
+  const cache = readBrandCache();
+  const now = Date.now();
+  const apply = () => list.forEach((s) => { const c = cache[s.id]; s.brand = c && c.b ? brandInfo(c.b) : null; });
+  apply();
+  const missing = list.filter((s) => !(cache[s.id] && now - cache[s.id].t < BRAND_TTL));
+  if (!missing.length) return false;
+
+  const found = new Map();
+  if (missing.length <= 8) {
+    // Peu de stations : une requête par station.
+    const res = await pool(missing.map((s) => () => brandApi(`/station/${s.id}?responseFields=Brand`)), 4);
+    res.forEach((r) => r && found.set(String(r.id), r.Brand?.name));
+  } else {
+    // Sinon : stations autour du point, triées par distance, par pages de 20 jusqu'à couvrir le rayon.
+    const pages = Math.min(50, Math.ceil(list.length / 20) + 2);
+    const res = await pool(Array.from({ length: pages }, (_, p) => () =>
+      brandApi(`/stations/around/${pos.lat},${pos.lon}?responseFields=Brand`, `station=${p * 20 + 1}-${p * 20 + 20}`)), 4);
+    res.flat().forEach((r) => r && found.set(String(r.id), r.Brand?.name));
+  }
+  if (!found.size) return false; // API indisponible : on réessaiera au prochain chargement
+  for (const s of missing) cache[s.id] = { b: found.get(String(s.id)) || null, t: now };
+  writeBrandCache(cache);
+  apply();
+  return true;
+}
+
+function initials(name) {
+  return norm(name).replace(/[^a-z0-9 ]/g, ' ').split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0]).join('').toUpperCase() || '?';
+}
+function logoHtml(s, cls = 'logo') {
+  const b = s.brand;
+  if (!b) return `<span class="${cls} empty" aria-hidden="true">⛽</span>`;
+  const fallback = `<span class="${cls} initials" title="${esc(b.name)}">${esc(initials(b.name))}</span>`;
+  return b.logo
+    ? `<img class="${cls}" src="${esc(b.logo)}" alt="${esc(b.name)}" title="${esc(b.name)}" loading="lazy" referrerpolicy="no-referrer" data-fallback="${esc(fallback)}">`
+    : fallback;
+}
+// Logo introuvable -> pastille avec les initiales.
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (img instanceof HTMLImageElement && img.dataset.fallback) img.outerHTML = img.dataset.fallback;
+}, true);
 
 // ---------- utilitaires ----------
 function setStatus(text, isError = false) {
@@ -152,10 +263,11 @@ function priceTiers(list) {
 
 function sorted() {
   const key = els.sort.value;
-  // Les stations qui vendent le carburant choisi d'abord, les autres ensuite par distance.
+  // Distance : toutes les stations par éloignement. Prix : celles avec un prix d'abord, les autres ensuite par distance.
+  if (key === 'distance') return [...stations].sort((a, b) => a.distance - b.distance);
   return [...stations].sort((a, b) =>
     (a.prix == null) - (b.prix == null)
-    || (key === 'distance' || a.prix == null ? a.distance - b.distance : a.prix - b.prix || a.distance - b.distance)
+    || (a.prix == null ? a.distance - b.distance : a.prix - b.prix || a.distance - b.distance)
   );
 }
 
@@ -312,7 +424,7 @@ function renderList() {
   const label = FUEL_LABELS[els.fuel.value];
   els.list.innerHTML = sorted().map((s) => `
     <li class="station${s.prix == null ? ' without' : ''}" data-id="${esc(s.id)}" tabindex="0" aria-label="Afficher l'historique des prix">
-      <div class="addr">${esc(s.adresse)}</div>
+      <div class="addr">${logoHtml(s)}<span>${s.brand ? `<span class="brand">${esc(s.brand.name)}</span>` : ''}${esc(s.adresse)}</span></div>
       ${s.prix != null
         ? `<div class="price ${s.stale ? 'stale' : tier(s.prix)}">${s.fallback ? `<span class="fb">${esc(FUEL_LABELS[s.fuel])}</span> ` : ''}${fmtPrice(s.prix)} <small>€/L</small></div>`
         : `<div class="price none">${s.rupture ? 'Rupture' : `Pas de ${esc(label)}`}</div>`}
@@ -355,10 +467,11 @@ function renderMap() {
     const has = s.prix != null;
     const cls = !has ? 'none' : s.stale ? 'stale' : tier(s.prix);
     const fbTag = s.fallback ? `<sup>${s.fuel === 'sp98' ? '98' : esc(FUEL_LABELS[s.fuel])}</sup>` : '';
-    const icon = L.divIcon({ className: '', html: `<div class="pin ${cls}">${has ? fmtPrice(s.prix) + fbTag : '—'}</div>`,
-      iconSize: has ? [s.fallback ? 64 : 52, 20] : [24, 20], iconAnchor: has ? [s.fallback ? 32 : 26, 10] : [12, 10] });
+    const w = (has ? (s.fallback ? 64 : 52) : 24) + 18; // + logo
+    const icon = L.divIcon({ className: '', html: `<div class="pin ${cls}">${logoHtml(s, 'plogo')}${has ? fmtPrice(s.prix) + fbTag : '—'}</div>`,
+      iconSize: [w, 20], iconAnchor: [w / 2, 10] });
     L.marker([s.lat, s.lon], { icon, zIndexOffset: has ? 100 : 0 })
-      .bindPopup(`<b>${esc(s.adresse)}</b><br>${esc(s.cp)} ${esc(s.ville)}<br>
+      .bindPopup(`${s.brand ? `<b>${esc(s.brand.name)}</b> · ` : ''}<b>${esc(s.adresse)}</b><br>${esc(s.cp)} ${esc(s.ville)}<br>
         <b>${has ? (s.fallback ? esc(FUEL_LABELS[s.fuel]) + ' ' : '') + fmtPrice(s.prix) + ' €/L' : (s.rupture ? 'Rupture de ' : 'Pas de ') + esc(FUEL_LABELS[els.fuel.value])}</b> · ${fmtKm(s.distance)}<br>
         ${s.fallback ? `<small>${s.rupture ? 'Rupture' : 'Pas'} de ${esc(FUEL_LABELS[els.fuel.value])}</small><br>` : ''}
         <small>${s.maj ? 'Mis à jour ' + fmtAge(s.maj) : esc(othersText(s))}</small><br>${navLinks(s)}`)
@@ -414,6 +527,10 @@ async function load({ relocate = false } = {}) {
       setStatus(`${plural(list.length, 'station')}${more} : ${direct} avec ${FUEL_LABELS[fuel]}${fbText} · meilleur prix ${best.fallback ? FUEL_LABELS[best.fuel] + ' ' : ''}${fmtPrice(best.prix)} € à ${fmtKm(best.distance)}`);
     }
     render();
+    // Enseignes en arrière-plan : la liste s'affiche sans les attendre.
+    loadBrands(list, position, Number(els.radius.value))
+      .then((changed) => { if (changed && stations === list) render(); })
+      .catch(() => { /* enseignes facultatives */ });
   } catch (e) {
     stations = [];
     render();
@@ -427,7 +544,7 @@ async function load({ relocate = false } = {}) {
 // ---------- événements ----------
 els.fuel.addEventListener('change', () => { savePrefs(); load(); });
 els.radius.addEventListener('change', () => { savePrefs(); load(); });
-els.sort.addEventListener('change', () => { savePrefs(); render(); });
+els.sort.addEventListener('change', () => { savePrefs({ sortChosen: true }); render(); });
 els.refresh.addEventListener('click', () => load({ relocate: true }));
 document.querySelectorAll('.tabs button').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
 els.list.addEventListener('click', (e) => {
