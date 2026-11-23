@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Prix carburant</title>
+  <meta name="description" content="Prix du SP95 dans les stations autour de vous (données officielles prix-carburants.gouv.fr).">
+  <meta name="theme-color" content="#0f766e">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon.svg">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>⛽ Prix <span id="fuel-title">SP95</span></h1>
+    <button id="refresh" class="icon" title="Actualiser" aria-label="Actualiser">⟳</button>
+  </header>
+
+  <section class="controls">
+    <label>Carburant
+      <select id="fuel">
+        <option value="sp95">SP95</option>
+        <option value="e10">SP95-E10</option>
+        <option value="sp98">SP98</option>
+        <option value="gazole">Gazole</option>
+        <option value="e85">E85</option>
+        <option value="gplc">GPL</option>
+      </select>
+    </label>
+    <label>Rayon
+      <select id="radius">
+        <option value="2">2 km</option>
+        <option value="5">5 km</option>
+        <option value="10" selected>10 km</option>
+        <option value="20">20 km</option>
+        <option value="30">30 km</option>
+      </select>
+    </label>
+    <label>Tri
+      <select id="sort">
+        <option value="price">Prix</option>
+        <option value="distance">Distance</option>
+      </select>
+    </label>
+  </section>
+
+  <div class="tabs" role="tablist">
+    <button role="tab" data-view="list" aria-selected="true">Liste</button>
+    <button role="tab" data-view="map" aria-selected="false">Carte</button>
+  </div>
+
+  <p id="status" class="status">Recherche de votre position…</p>
+
+  <main>
+    <ul id="list" class="list"></ul>
+    <div id="map" class="map" hidden></div>
+  </main>
+
+  <footer>
+    Données : <a href="https://www.prix-carburants.gouv.fr/" target="_blank" rel="noopener">prix-carburants.gouv.fr</a>
+    via <a href="https://data.economie.gouv.fr/explore/dataset/prix-des-carburants-en-france-flux-instantane-v2/" target="_blank" rel="noopener">data.economie.gouv.fr</a>
+  </footer>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
