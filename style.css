@@ -89,6 +89,10 @@ select {
 }
 
 .station { cursor: pointer; }
+.station .others { grid-column: 1 / -1; font-size: 0.8rem; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
+.station.without .addr { font-weight: 500; }
+.price.none { font-size: 0.85rem; font-weight: 600; color: var(--stale); }
+.pin.none { color: var(--stale); opacity: 0.8; }
 .station:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .station .go { align-items: center; }
 .station .hint { margin-left: auto; font-size: 0.8rem; color: var(--muted); }

@@ -79,21 +79,42 @@ function locate() {
 }
 
 // ---------- API ----------
-async function fetchStations(pos, fuel, radiusKm) {
-  const where = `within_distance(geom, geom'POINT(${pos.lon} ${pos.lat})', ${radiusKm}km) and ${fuel}_prix is not null`;
+// Nom du carburant dans les champs « rupture » du jeu de données.
+const FUEL_DATA_NAME = { sp95: 'SP95', e10: 'E10', sp98: 'SP98', gazole: 'Gazole', e85: 'E85', gplc: 'GPLc' };
+const PAGE = 100;        // maximum de l'API par requête
+const MAX_STATIONS = 1000;
+
+async function fetchPage(where, offset) {
   const params = new URLSearchParams({
     where,
-    select: `id,adresse,ville,cp,geom,${fuel}_prix,${fuel}_maj,horaires_automate_24_24,carburants_rupture_temporaire`,
-    order_by: `${fuel}_prix asc`,
-    limit: '100',
+    select: 'id,adresse,ville,cp,geom,sp95_prix,sp95_maj,e10_prix,e10_maj,sp98_prix,sp98_maj,gazole_prix,gazole_maj,'
+      + 'e85_prix,e85_maj,gplc_prix,gplc_maj,horaires_automate_24_24,carburants_rupture_temporaire',
+    order_by: 'id', // ordre stable pour la pagination
+    limit: String(PAGE),
+    offset: String(offset),
   });
   const res = await fetch(`${API}?${params}`);
   if (!res.ok) throw new Error(`Le service de prix a répondu ${res.status}.`);
-  const data = await res.json();
-  const list = (data.results || [])
-    .filter((r) => r.geom && r[`${fuel}_prix`] > 0)
+  return res.json();
+}
+
+// Toutes les stations du rayon, qu'elles vendent ou non le carburant choisi.
+async function fetchStations(pos, fuel, radiusKm) {
+  const where = `within_distance(geom, geom'POINT(${pos.lon} ${pos.lat})', ${radiusKm}km)`;
+  const first = await fetchPage(where, 0);
+  const total = first.total_count || 0;
+  const offsets = [];
+  for (let o = PAGE; o < Math.min(total, MAX_STATIONS); o += PAGE) offsets.push(o);
+  const rest = await Promise.all(offsets.map((o) => fetchPage(where, o)));
+  const rows = [first, ...rest].flatMap((d) => d.results || []);
+  const list = rows
+    .filter((r) => r.geom)
     .map((r) => {
-      const maj = r[`${fuel}_maj`] ? new Date(r[`${fuel}_maj`]) : null;
+      const prix = r[`${fuel}_prix`] > 0 ? r[`${fuel}_prix`] : null;
+      const maj = prix && r[`${fuel}_maj`] ? new Date(r[`${fuel}_maj`]) : null;
+      const others = Object.keys(FUEL_LABELS)
+        .filter((f) => f !== fuel && r[`${f}_prix`] > 0)
+        .map((f) => ({ fuel: f, prix: r[`${f}_prix`] }));
       return {
         id: r.id,
         adresse: titleCase(r.adresse),
@@ -101,20 +122,22 @@ async function fetchStations(pos, fuel, radiusKm) {
         cp: r.cp,
         lat: r.geom.lat,
         lon: r.geom.lon,
-        prix: r[`${fuel}_prix`],
+        prix,
         maj,
-        stale: !maj || Date.now() - maj.getTime() > STALE_DAYS * 86400000,
+        stale: prix != null && (!maj || Date.now() - maj.getTime() > STALE_DAYS * 86400000),
+        rupture: String(r.carburants_rupture_temporaire || '').split(/[;,]\s*|\s+/).includes(FUEL_DATA_NAME[fuel]),
+        others,
         h24: r.horaires_automate_24_24 === 'Oui',
         distance: haversineKm(pos, { lat: r.geom.lat, lon: r.geom.lon }),
       };
     });
-  return { list, total: data.total_count || list.length };
+  return { list, total };
 }
 
 // ---------- rendu ----------
 function priceTiers(list) {
   // Les prix récents servent de référence : terciles bon marché / moyen / cher.
-  const prices = list.filter((s) => !s.stale).map((s) => s.prix).sort((a, b) => a - b);
+  const prices = list.filter((s) => s.prix != null && !s.stale).map((s) => s.prix).sort((a, b) => a - b);
   if (prices.length < 3) return () => '';
   const q = (f) => prices[Math.min(prices.length - 1, Math.floor(f * prices.length))];
   const lo = q(1 / 3), hi = q(2 / 3);
@@ -123,10 +146,14 @@ function priceTiers(list) {
 
 function sorted() {
   const key = els.sort.value;
+  // Les stations qui vendent le carburant choisi d'abord, les autres ensuite par distance.
   return [...stations].sort((a, b) =>
-    key === 'distance' ? a.distance - b.distance : a.prix - b.prix || a.distance - b.distance
+    (a.prix == null) - (b.prix == null)
+    || (key === 'distance' || a.prix == null ? a.distance - b.distance : a.prix - b.prix || a.distance - b.distance)
   );
 }
+
+const othersText = (s) => s.others.map((o) => `${FUEL_LABELS[o.fuel]} ${fmtPrice(o.prix)}`).join(' · ');
 
 function navLinks(s) {
   const dest = `${s.lat},${s.lon}`;
@@ -276,17 +303,21 @@ async function toggleHistory(li) {
 
 function renderList() {
   const tier = priceTiers(stations);
+  const label = FUEL_LABELS[els.fuel.value];
   els.list.innerHTML = sorted().map((s) => `
-    <li class="station" data-id="${esc(s.id)}" tabindex="0" aria-label="Afficher l'historique des prix">
+    <li class="station${s.prix == null ? ' without' : ''}" data-id="${esc(s.id)}" tabindex="0" aria-label="Afficher l'historique des prix">
       <div class="addr">${esc(s.adresse)}</div>
-      <div class="price ${s.stale ? 'stale' : tier(s.prix)}">${fmtPrice(s.prix)} <small>€/L</small></div>
+      ${s.prix != null
+        ? `<div class="price ${s.stale ? 'stale' : tier(s.prix)}">${fmtPrice(s.prix)} <small>€/L</small></div>`
+        : `<div class="price none">${s.rupture ? 'Rupture' : `Pas de ${esc(label)}`}</div>`}
       <div class="city">${esc(s.cp)} ${esc(s.ville)}</div>
       <div class="meta">
         <span>📍 ${fmtKm(s.distance)}</span>
-        <span class="${s.stale ? 'stale' : ''}">🕑 ${s.maj ? fmtAge(s.maj) : 'date inconnue'}</span>
+        ${s.prix != null ? `<span class="${s.stale ? 'stale' : ''}">🕑 ${s.maj ? fmtAge(s.maj) : 'date inconnue'}</span>` : ''}
         ${s.stale ? '<span class="badge">prix ancien</span>' : ''}
         ${s.h24 ? '<span class="badge">24/24</span>' : ''}
       </div>
+      ${s.others.length ? `<div class="others">${esc(othersText(s))}</div>` : ''}
       <div class="go">${navLinks(s)}<span class="hint">📈 Historique 7 j</span></div>
       <div class="hist" hidden></div>
     </li>`).join('');
@@ -314,12 +345,14 @@ function renderMap() {
   markersLayer.addLayer(me);
   const bounds = [[position.lat, position.lon]];
   for (const s of stations) {
-    const cls = s.stale ? 'stale' : tier(s.prix);
-    const icon = L.divIcon({ className: '', html: `<div class="pin ${cls}">${fmtPrice(s.prix)}</div>`, iconSize: [52, 20], iconAnchor: [26, 10] });
-    L.marker([s.lat, s.lon], { icon })
+    const has = s.prix != null;
+    const cls = !has ? 'none' : s.stale ? 'stale' : tier(s.prix);
+    const icon = L.divIcon({ className: '', html: `<div class="pin ${cls}">${has ? fmtPrice(s.prix) : '—'}</div>`,
+      iconSize: has ? [52, 20] : [24, 20], iconAnchor: has ? [26, 10] : [12, 10] });
+    L.marker([s.lat, s.lon], { icon, zIndexOffset: has ? 100 : 0 })
       .bindPopup(`<b>${esc(s.adresse)}</b><br>${esc(s.cp)} ${esc(s.ville)}<br>
-        <b>${fmtPrice(s.prix)} €/L</b> · ${fmtKm(s.distance)}<br>
-        <small>${s.maj ? 'Mis à jour ' + fmtAge(s.maj) : ''}</small><br>${navLinks(s)}`)
+        <b>${has ? fmtPrice(s.prix) + ' €/L' : (s.rupture ? 'Rupture de ' : 'Pas de ') + esc(FUEL_LABELS[els.fuel.value])}</b> · ${fmtKm(s.distance)}<br>
+        <small>${s.maj ? 'Mis à jour ' + fmtAge(s.maj) : esc(othersText(s))}</small><br>${navLinks(s)}`)
       .addTo(markersLayer);
     bounds.push([s.lat, s.lon]);
   }
@@ -356,13 +389,17 @@ async function load({ relocate = false } = {}) {
     setStatus(`Recherche des stations ${FUEL_LABELS[fuel]}…`);
     const { list, total } = await fetchStations(position, fuel, Number(els.radius.value));
     stations = list;
+    const selling = list.filter((s) => s.prix != null);
+    const plural = (n, w) => `${n} ${w}${n > 1 ? 's' : ''}`;
+    const more = total > list.length ? ` (${list.length} premières sur ${total})` : '';
     if (!list.length) {
-      setStatus(`Aucune station ne vend du ${FUEL_LABELS[fuel]} dans un rayon de ${els.radius.value} km. Élargissez le rayon.`);
+      setStatus(`Aucune station dans un rayon de ${els.radius.value} km. Élargissez le rayon.`);
+    } else if (!selling.length) {
+      setStatus(`${plural(list.length, 'station')}${more}, aucune ne vend du ${FUEL_LABELS[fuel]}. Élargissez le rayon.`);
     } else {
-      const fresh = list.filter((s) => !s.stale);
-      const best = (fresh.length ? fresh : list).reduce((a, b) => (b.prix < a.prix ? b : a));
-      const more = total > list.length ? ` (100 moins chères affichées sur ${total})` : '';
-      setStatus(`${list.length} station${list.length > 1 ? 's' : ''}${more} · meilleur prix ${fmtPrice(best.prix)} € à ${fmtKm(best.distance)}`);
+      const fresh = selling.filter((s) => !s.stale);
+      const best = (fresh.length ? fresh : selling).reduce((a, b) => (b.prix < a.prix ? b : a));
+      setStatus(`${plural(list.length, 'station')}${more} dont ${selling.length} avec ${FUEL_LABELS[fuel]} · meilleur prix ${fmtPrice(best.prix)} € à ${fmtKm(best.distance)}`);
     }
     render();
   } catch (e) {

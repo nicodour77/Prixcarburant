@@ -1,6 +1,8 @@
 # Prixcarburant
 
 Application web (PWA) qui affiche le prix du **SP95** dans les stations autour de votre position, du moins cher au plus cher.
+Toutes les stations du rayon sont listées : celles qui ne vendent pas le carburant choisi (ou en rupture) viennent
+ensuite, par distance, avec leurs autres prix (beaucoup ne vendent que du SP95-E10).
 Autres carburants disponibles dans le sélecteur : SP95-E10, SP98, Gazole, E85, GPL.
 
 - Rayon réglable (2 à 30 km), tri par prix ou par distance, vue liste ou carte (Leaflet + OpenStreetMap).
@@ -14,7 +16,7 @@ Autres carburants disponibles dans le sélecteur : SP95-E10, SP98, Gazole, E85, 
 
 Flux instantané officiel [prix-carburants.gouv.fr](https://www.prix-carburants.gouv.fr/), via l'API Opendatasoft de
 data.economie.gouv.fr (jeu `prix-des-carburants-en-france-flux-instantane-v2`) : sans clé, CORS ouvert, appelée
-directement depuis le navigateur (filtre `within_distance(geom, …)`, 100 stations maximum par requête).
+directement depuis le navigateur (filtre `within_distance(geom, …)`, pagination par 100, 1000 stations maximum).
 
 Historique : fichiers quotidiens officiels `https://donnees.roulez-eco.fr/opendata/jour/AAAAMMJJ` (zip ~1 Mo,
 CORS ouvert, dernier prix connu de chaque station en fin de journée). J-6 à J-1 sont téléchargés au premier clic,
