@@ -81,7 +81,8 @@ function locate() {
 // ---------- API ----------
 // Nom du carburant dans les champs « rupture » du jeu de données.
 const FUEL_DATA_NAME = { sp95: 'SP95', e10: 'E10', sp98: 'SP98', gazole: 'Gazole', e85: 'E85', gplc: 'GPLc' };
-const PAGE = 100;        // maximum de l'API par requête
+const FALLBACK = { sp95: 'sp98' }; // carburant affiché à défaut du carburant choisi
+const PAGE = 100;       // maximum de l'API par requête
 const MAX_STATIONS = 1000;
 
 async function fetchPage(where, offset) {
@@ -110,10 +111,13 @@ async function fetchStations(pos, fuel, radiusKm) {
   const list = rows
     .filter((r) => r.geom)
     .map((r) => {
-      const prix = r[`${fuel}_prix`] > 0 ? r[`${fuel}_prix`] : null;
-      const maj = prix && r[`${fuel}_maj`] ? new Date(r[`${fuel}_maj`]) : null;
+      // Sans le carburant choisi, on affiche celui de repli (SP98 pour le SP95) s'il est vendu.
+      const fb = FALLBACK[fuel];
+      const shown = r[`${fuel}_prix`] > 0 ? fuel : fb && r[`${fb}_prix`] > 0 ? fb : null;
+      const prix = shown ? r[`${shown}_prix`] : null;
+      const maj = shown && r[`${shown}_maj`] ? new Date(r[`${shown}_maj`]) : null;
       const others = Object.keys(FUEL_LABELS)
-        .filter((f) => f !== fuel && r[`${f}_prix`] > 0)
+        .filter((f) => f !== fuel && f !== shown && r[`${f}_prix`] > 0)
         .map((f) => ({ fuel: f, prix: r[`${f}_prix`] }));
       return {
         id: r.id,
@@ -123,6 +127,8 @@ async function fetchStations(pos, fuel, radiusKm) {
         lat: r.geom.lat,
         lon: r.geom.lon,
         prix,
+        fuel: shown,              // carburant du prix affiché
+        fallback: shown != null && shown !== fuel,
         maj,
         stale: prix != null && (!maj || Date.now() - maj.getTime() > STALE_DAYS * 86400000),
         rupture: String(r.carburants_rupture_temporaire || '').split(/[;,]\s*|\s+/).includes(FUEL_DATA_NAME[fuel]),
@@ -259,9 +265,9 @@ function historyHtml(points) {
   if (vals.length < 2) return '<p class="hist-msg">Pas assez de données sur 7 jours pour cette station.</p>';
   const min = Math.min(...vals), max = Math.max(...vals);
   const W = 320, H = 120, padX = 24, padTop = 22, padBot = 26;
-  const span = max - min || 0.01;
+  const span = max - min;
   const x = (i) => padX + (i * (W - 2 * padX)) / (points.length - 1);
-  const y = (v) => padTop + ((max - v) * (H - padTop - padBot)) / span;
+  const y = (v) => (span ? padTop + ((max - v) * (H - padTop - padBot)) / span : (padTop + H - padBot) / 2);
   const known = points.map((p, i) => ({ ...p, i })).filter((p) => p.v != null);
   const path = known.map((p, k) => `${k ? 'L' : 'M'}${x(p.i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
   const dots = known.map((p) => {
@@ -290,12 +296,12 @@ async function toggleHistory(li) {
   box.hidden = false; li.classList.add('open');
   const s = stations.find((x) => String(x.id) === li.dataset.id);
   if (!s) return;
-  const fuel = els.fuel.value;
+  const fuel = s.fuel || els.fuel.value; // historique du carburant affiché (SP98 en repli)
   const needDownload = pastDays().some((d) => !dayCache.has(ymd(d)));
   box.innerHTML = `<p class="hist-msg">${needDownload ? 'Téléchargement de l\'historique officiel (une seule fois, ~7 Mo)…' : 'Chargement…'}</p>`;
   try {
     const points = await stationHistory(s, fuel);
-    if (fuel === els.fuel.value) box.innerHTML = historyHtml(points);
+    if (box.isConnected) box.innerHTML = historyHtml(points); // la liste a pu être redessinée entre-temps
   } catch (e) {
     box.innerHTML = `<p class="hist-msg error">Historique indisponible : ${esc(e.message)}</p>`;
   }
@@ -308,13 +314,14 @@ function renderList() {
     <li class="station${s.prix == null ? ' without' : ''}" data-id="${esc(s.id)}" tabindex="0" aria-label="Afficher l'historique des prix">
       <div class="addr">${esc(s.adresse)}</div>
       ${s.prix != null
-        ? `<div class="price ${s.stale ? 'stale' : tier(s.prix)}">${fmtPrice(s.prix)} <small>€/L</small></div>`
+        ? `<div class="price ${s.stale ? 'stale' : tier(s.prix)}">${s.fallback ? `<span class="fb">${esc(FUEL_LABELS[s.fuel])}</span> ` : ''}${fmtPrice(s.prix)} <small>€/L</small></div>`
         : `<div class="price none">${s.rupture ? 'Rupture' : `Pas de ${esc(label)}`}</div>`}
       <div class="city">${esc(s.cp)} ${esc(s.ville)}</div>
       <div class="meta">
         <span>📍 ${fmtKm(s.distance)}</span>
         ${s.prix != null ? `<span class="${s.stale ? 'stale' : ''}">🕑 ${s.maj ? fmtAge(s.maj) : 'date inconnue'}</span>` : ''}
         ${s.stale ? '<span class="badge">prix ancien</span>' : ''}
+        ${s.fallback ? `<span class="badge">${s.rupture ? 'rupture' : 'pas'} de ${esc(label)}</span>` : ''}
         ${s.h24 ? '<span class="badge">24/24</span>' : ''}
       </div>
       ${s.others.length ? `<div class="others">${esc(othersText(s))}</div>` : ''}
@@ -347,11 +354,13 @@ function renderMap() {
   for (const s of stations) {
     const has = s.prix != null;
     const cls = !has ? 'none' : s.stale ? 'stale' : tier(s.prix);
-    const icon = L.divIcon({ className: '', html: `<div class="pin ${cls}">${has ? fmtPrice(s.prix) : '—'}</div>`,
-      iconSize: has ? [52, 20] : [24, 20], iconAnchor: has ? [26, 10] : [12, 10] });
+    const fbTag = s.fallback ? `<sup>${s.fuel === 'sp98' ? '98' : esc(FUEL_LABELS[s.fuel])}</sup>` : '';
+    const icon = L.divIcon({ className: '', html: `<div class="pin ${cls}">${has ? fmtPrice(s.prix) + fbTag : '—'}</div>`,
+      iconSize: has ? [s.fallback ? 64 : 52, 20] : [24, 20], iconAnchor: has ? [s.fallback ? 32 : 26, 10] : [12, 10] });
     L.marker([s.lat, s.lon], { icon, zIndexOffset: has ? 100 : 0 })
       .bindPopup(`<b>${esc(s.adresse)}</b><br>${esc(s.cp)} ${esc(s.ville)}<br>
-        <b>${has ? fmtPrice(s.prix) + ' €/L' : (s.rupture ? 'Rupture de ' : 'Pas de ') + esc(FUEL_LABELS[els.fuel.value])}</b> · ${fmtKm(s.distance)}<br>
+        <b>${has ? (s.fallback ? esc(FUEL_LABELS[s.fuel]) + ' ' : '') + fmtPrice(s.prix) + ' €/L' : (s.rupture ? 'Rupture de ' : 'Pas de ') + esc(FUEL_LABELS[els.fuel.value])}</b> · ${fmtKm(s.distance)}<br>
+        ${s.fallback ? `<small>${s.rupture ? 'Rupture' : 'Pas'} de ${esc(FUEL_LABELS[els.fuel.value])}</small><br>` : ''}
         <small>${s.maj ? 'Mis à jour ' + fmtAge(s.maj) : esc(othersText(s))}</small><br>${navLinks(s)}`)
       .addTo(markersLayer);
     bounds.push([s.lat, s.lon]);
@@ -399,7 +408,10 @@ async function load({ relocate = false } = {}) {
     } else {
       const fresh = selling.filter((s) => !s.stale);
       const best = (fresh.length ? fresh : selling).reduce((a, b) => (b.prix < a.prix ? b : a));
-      setStatus(`${plural(list.length, 'station')}${more} dont ${selling.length} avec ${FUEL_LABELS[fuel]} · meilleur prix ${fmtPrice(best.prix)} € à ${fmtKm(best.distance)}`);
+      const direct = selling.filter((s) => !s.fallback).length;
+      const fb = selling.length - direct;
+      const fbText = fb ? `, ${fb} avec ${FUEL_LABELS[FALLBACK[fuel]]} à défaut` : '';
+      setStatus(`${plural(list.length, 'station')}${more} : ${direct} avec ${FUEL_LABELS[fuel]}${fbText} · meilleur prix ${best.fallback ? FUEL_LABELS[best.fuel] + ' ' : ''}${fmtPrice(best.prix)} € à ${fmtKm(best.distance)}`);
     }
     render();
   } catch (e) {

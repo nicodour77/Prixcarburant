@@ -1,8 +1,9 @@
 # Prixcarburant
 
 Application web (PWA) qui affiche le prix du **SP95** dans les stations autour de votre position, du moins cher au plus cher.
-Toutes les stations du rayon sont listées : celles qui ne vendent pas le carburant choisi (ou en rupture) viennent
-ensuite, par distance, avec leurs autres prix (beaucoup ne vendent que du SP95-E10).
+Toutes les stations du rayon sont listées. Sans SP95 (non vendu ou en rupture), c'est le prix du **SP98** qui est affiché
+(étiquette « SP98 », classé avec les autres prix, historique du SP98). Les stations sans le carburant choisi ni son
+repli viennent ensuite, par distance, avec leurs autres prix (beaucoup ne vendent que du SP95-E10).
 Autres carburants disponibles dans le sélecteur : SP95-E10, SP98, Gazole, E85, GPL.
 
 - Rayon réglable (2 à 30 km), tri par prix ou par distance, vue liste ou carte (Leaflet + OpenStreetMap).

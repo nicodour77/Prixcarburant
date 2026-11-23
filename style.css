@@ -91,6 +91,8 @@ select {
 .station { cursor: pointer; }
 .station .others { grid-column: 1 / -1; font-size: 0.8rem; color: var(--muted); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .station.without .addr { font-weight: 500; }
+.price .fb { font-size: 0.7rem; font-weight: 600; vertical-align: middle; padding: 1px 5px; border-radius: 5px; border: 1px solid currentColor; }
+.pin sup { font-size: 9px; margin-left: 1px; }
 .price.none { font-size: 0.85rem; font-weight: 600; color: var(--stale); }
 .pin.none { color: var(--stale); opacity: 0.8; }
 .station:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
